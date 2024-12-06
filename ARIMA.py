@@ -1,77 +1,84 @@
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
 from sklearn.metrics import mean_squared_error
+from statsmodels.tsa.stattools import adfuller
 
 # Load time series data
 data = pd.read_csv('Database.csv', index_col='Time', parse_dates=True)
-demand = data['Electric_demand']  # Replace 'Demand' with your column name for electricity demand
+demand = data['Electric_demand']  # Replace 'Electric_demand' with your column name for electricity demand
 temperature = data['Temperature']  # Replace 'Temperature' with your column name for temperature
-days = data.index.dayofweek  # Extract day of the week from the date index
 
-# Add a column for the season
-def get_season(date):
-    month = date.month
-    if month in [12, 1, 2]:
-        return 'Winter'
-    elif month in [3, 4, 5]:
-        return 'Spring'
-    elif month in [6, 7, 8]:
-        return 'Summer'
-    else:
-        return 'Fall'
+# Split data into training and testing sets
+train_data = data[:'2020']
+test_data = data['2021':]
 
-data['Season'] = data.index.map(get_season)
-
-# Calculate average demand for each season
-seasonal_avg = data.groupby('Season')['Electric_demand'].mean()
-print(seasonal_avg)
-
-# Plot the time series
-plt.figure(figsize=(10, 5))
-plt.plot(demand, label="Electricity Demand")
-plt.title("Electricity Demand Time Series")
-plt.xlabel("Date")
-plt.ylabel("Demand")
-plt.legend()
-plt.show()
+train_demand = train_data['Electric_demand']
+test_demand = test_data['Electric_demand']
+test_temperature = test_data['Temperature']
 
 # Make the series stationary (if needed)
-from statsmodels.tsa.stattools import adfuller
-
-result = adfuller(demand)
+result = adfuller(train_demand)
 if result[1] > 0.05:  # If p-value > 0.05, apply differencing
-    demand_diff = demand.diff().dropna()
-    demand = demand_diff
+    train_demand_diff = train_demand.diff().dropna()
+    train_demand = train_demand_diff
 
 # Determine ARIMA (p, d, q) using PACF and ACF plots
-plot_acf(demand)
-plt.show()
+plot_acf(train_demand)
+plt.savefig('acf_plot.png')
+plt.close()
 
-plot_pacf(demand)
-plt.show()
-# Fit SARIMAX model
-exog = pd.DataFrame({'Temperature': temperature, 'DayOfWeek': days})
-model = SARIMAX(demand, exog=exog, order=(p, d, q), seasonal_order=(P, D, Q, s))
-model_fit = model.fit(disp=False)
+plot_pacf(train_demand)
+plt.savefig('pacf_plot.png')
+plt.close()
 
-# Forecast
-forecast_steps = 10  # Number of steps to forecast
-forecast = model_fit.get_forecast(steps=forecast_steps, exog=exog[-forecast_steps:])
+# Fit ARIMA model
+model = ARIMA(train_demand, order=(1, 1, 1))  # Replace with appropriate (p, d, q)
+model_fit = model.fit()
+
+# Forecast for 2021
+forecast_steps = len(test_data)  # Number of steps to forecast
+forecast = model_fit.get_forecast(steps=forecast_steps)
 forecast_mean = forecast.predicted_mean
+confidence_intervals = forecast.conf_int()
 
-# Plot forecast
+# Save the forecast and confidence intervals to a CSV file
+forecast_df = pd.DataFrame({
+    'Forecast': forecast_mean,
+    'Lower CI': confidence_intervals.iloc[:, 0],
+    'Upper CI': confidence_intervals.iloc[:, 1]
+}, index=test_data.index)
+forecast_df.to_csv('2021_forecast_with_ci.csv')
+
+# Plot forecast with confidence intervals
 plt.figure(figsize=(10, 5))
-plt.plot(demand, label="Observed")
-plt.plot(forecast_mean, label="Forecast", color='red')
-plt.title("Electricity Demand Forecast")
+plt.plot(train_demand, label="Observed (Train)")
+plt.plot(test_data.index, forecast_mean, label="Forecast (2021)", color='red')
+plt.fill_between(test_data.index, confidence_intervals.iloc[:, 0], confidence_intervals.iloc[:, 1], color='pink', alpha=0.3)
+plt.title("Electricity Demand Forecast with Confidence Intervals")
 plt.xlabel("Date")
 plt.ylabel("Demand")
 plt.legend()
-plt.show()
+plt.savefig('forecast_plot_with_ci.png')
+plt.close()
 
 # Calculate mean squared error
-mse = mean_squared_error(demand[-forecast_steps:], forecast_mean)
+mse = mean_squared_error(test_demand, forecast_mean)
 print(f'Mean Squared Error: {mse}')
+
+# Outlier analysis on temperature
+temperature_mean = test_temperature.mean()
+temperature_std = test_temperature.std()
+outliers = test_temperature[(test_temperature < temperature_mean - 3 * temperature_std) | (test_temperature > temperature_mean + 3 * temperature_std)]
+
+# Examine if anomalies coincide with significant deviations in forecast accuracy
+forecast_errors = test_demand - forecast_mean
+significant_deviations = forecast_errors[(forecast_errors > forecast_errors.mean() + 3 * forecast_errors.std()) | (forecast_errors < forecast_errors.mean() - 3 * forecast_errors.std())]
+
+# Print outliers and significant deviations
+print("Temperature Outliers:")
+print(outliers)
+print("Significant Forecast Deviations:")
+print(significant_deviations)
