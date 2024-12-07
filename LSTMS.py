@@ -1,18 +1,21 @@
-import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import numpy as np
 from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import mean_squared_error
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from keras.models import Sequential
+from keras.layers import LSTM, Dense
+import matplotlib.pyplot as plt
 
 # Load time series data
 data = pd.read_csv('Database.csv', index_col='Time', parse_dates=True)
 time_series = data['Electric_demand']  # Replace 'Electric_demand' with your column name for electricity demand
 
+# Filter data for the years 2019 and 2020
+filtered_data = time_series['2019':'2020']
+
 # Preprocess data
 scaler = MinMaxScaler(feature_range=(0, 1))
-scaled_data = scaler.fit_transform(time_series.values.reshape(-1, 1))
+scaled_data = scaler.fit_transform(filtered_data.values.reshape(-1, 1))
 
 # Create training and testing datasets
 train_size = int(len(scaled_data) * 0.8)
@@ -38,63 +41,54 @@ X_test = X_test.reshape((X_test.shape[0], X_test.shape[1], 1))
 # Build LSTM model
 model = Sequential()
 model.add(LSTM(50, return_sequences=True, input_shape=(seq_length, 1)))
-model.add(LSTM(50))
+model.add(LSTM(50, return_sequences=False))
+model.add(Dense(25))
 model.add(Dense(1))
+
+# Compile the model
 model.compile(optimizer='adam', loss='mean_squared_error')
 
 # Train the model
-model.fit(X_train, y_train, epochs=1, batch_size=32)
+model.fit(X_train, y_train, batch_size=1, epochs=1)
 
-# Make predictions
-train_predictions = model.predict(X_train)
+# Predict values for the test set
 test_predictions = model.predict(X_test)
-
-# Inverse scale the predictions and actual values
-train_predictions = scaler.inverse_transform(train_predictions)
 test_predictions = scaler.inverse_transform(test_predictions)
-y_train_actual = scaler.inverse_transform(y_train.reshape(-1, 1))
-y_test_actual = scaler.inverse_transform(y_test.reshape(-1, 1))
 
-# Calculate confidence intervals (assuming normal distribution of errors)
-train_errors = y_train_actual - train_predictions
-test_errors = y_test_actual - test_predictions
+# Calculate error values
+mse = mean_squared_error(scaler.inverse_transform(y_test.reshape(-1, 1)), test_predictions)
+mae = mean_absolute_error(scaler.inverse_transform(y_test.reshape(-1, 1)), test_predictions)
 
-train_error_std = np.std(train_errors)
-test_error_std = np.std(test_errors)
+print(f'Mean Squared Error: {mse}')
+print(f'Mean Absolute Error: {mae}')
 
-train_confidence_intervals = np.array([train_predictions - 1.96 * train_error_std, train_predictions + 1.96 * train_error_std]).T
-test_confidence_intervals = np.array([test_predictions - 1.96 * test_error_std, test_predictions + 1.96 * test_error_std]).T
+# Extend the data to include 2021 for prediction
+extended_data = time_series['2019':'2021']
+scaled_extended_data = scaler.transform(extended_data.values.reshape(-1, 1))
 
-# Plot the results with confidence intervals
-plt.figure(figsize=(10, 5))
-plt.plot(data.index[:len(train_predictions)], train_predictions, label="Train Predictions", color="green")
-plt.fill_between(data.index[:len(train_predictions)], train_confidence_intervals[:, 0], train_confidence_intervals[:, 1], color='green', alpha=0.3)
-plt.plot(data.index[len(train_predictions):len(train_predictions) + len(test_predictions)], test_predictions, label="Test Predictions", color="orange")
-plt.fill_between(data.index[len(train_predictions):len(train_predictions) + len(test_predictions)], test_confidence_intervals[:, 0], test_confidence_intervals[:, 1], color='orange', alpha=0.3)
-plt.title("LSTM Model Forecasting with Confidence Intervals")
-plt.xlabel("Date")
-plt.ylabel("Value")
+# Create sequences for 2021 prediction
+X_extended, _ = create_sequences(scaled_extended_data, seq_length)
+
+# Predict values for 2021
+extended_predictions = model.predict(X_extended)
+extended_predictions = scaler.inverse_transform(extended_predictions)
+
+# Output the predicted values for 2021
+predicted_2021 = extended_predictions[-len(time_series['2021']):]
+
+# Create a DataFrame for the predicted values
+predicted_2021_df = pd.DataFrame(predicted_2021, index=time_series['2021'].index, columns=['Predicted_Electric_Demand'])
+
+# Save the predicted values to a CSV file
+predicted_2021_df.to_csv('predicted_2021.csv')
+
+# Plot the results
+plt.figure(figsize=(10, 6))
+plt.plot(filtered_data.index[train_size + seq_length:], scaler.inverse_transform(test_data[seq_length:]), label='Actual')
+plt.plot(filtered_data.index[train_size + seq_length:], test_predictions, label='Predicted')
+plt.plot(time_series['2021'].index, predicted_2021, label='2021 Prediction', linestyle='--')
+plt.title('Electricity Demand Prediction')
+plt.xlabel('Date')
+plt.ylabel('Electricity Demand')
 plt.legend()
 plt.show()
-
-# Calculate mean squared error
-mse_train = mean_squared_error(y_train_actual, train_predictions)
-mse_test = mean_squared_error(y_test_actual, test_predictions)
-print(f'Mean Squared Error (Train): {mse_train}')
-print(f'Mean Squared Error (Test): {mse_test}')
-
-# Outlier analysis on temperature
-temperature = data['Temperature']  # Replace 'Temperature' with your column name for temperature
-temperature_mean = temperature.mean()
-temperature_std = temperature.std()
-outliers = temperature[(temperature < temperature_mean - 3 * temperature_std) | (temperature > temperature_mean + 3 * temperature_std)]
-
-# Examine if anomalies coincide with significant deviations in forecast accuracy
-forecast_errors = y_test_actual - test_predictions
-significant_deviations = forecast_errors[(forecast_errors > forecast_errors.mean() + 3 * forecast_errors.std()) | (forecast_errors < forecast_errors.mean() - 3 * forecast_errors.std())]
-
-# Print outliers and significant deviations
-print("Temperature Outliers:")
-print(outliers)
-print("Significant Forecast Deviations:")
-print(significant_deviations)
